@@ -1,0 +1,142 @@
+---
+title: "Project2"
+author: "FRD"
+date: "5/7/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(GEOquery)
+library(R.utils)
+library(reshape2)
+library(ggplot2)
+library(limma)
+library(dplyr)
+```
+
+```{r}
+clinical_outcome <-getGEO("GSE120396")
+clinical_outcome<- clinical_outcome$GSE120396_series_matrix.txt.gz
+
+print(clinical_outcome$characteristics_ch1.1[1:10])
+
+```
+
+```{r}
+rejection_status  <- clinical_outcome$characteristics_ch1.1
+rejection_status <- unlist(lapply(strsplit(as.character(rejection_status), ": " ) , `[[` , 2)  )
+table(rejection_status)
+```
+
+```{r}
+datadir = "GSE120396_RAW"
+fileNames <- list.files(datadir)
+print(fileNames[1:5])
+```
+
+```{r}
+gse = c()
+for(i in 1:length(fileNames)){
+  temptable <- read.delim(file.path(datadir, fileNames[i]), header=TRUE)
+  gse <- cbind(gse, temptable[,2])
+  colnames(gse)[i] <- colnames(temptable)[2]
+}
+
+rownames(gse) = read.delim(file.path(datadir, fileNames[1]), header=TRUE)[,1]
+dim(gse)
+head(rownames(gse))
+summary(gse[,1])
+```
+
+
+
+```{r}
+boxplot(gse)
+```
+```{r}
+groupname <- factor(rejection_status)
+design <- model.matrix(~ groupname + 0)
+
+fit <- lmFit(gse, design)
+cont.matrix <- makeContrasts(groupnameYes-groupnameNo, levels=design)
+fit2 <- contrasts.fit(fit, cont.matrix)
+fit2 <- eBayes(fit2)
+tT <- topTable(fit2)
+round(tT[1:5,], 2)
+```
+
+impact of multiple testing
+```{r}
+cl <- factor(sample(c("YES", "NO"), 80, replace=TRUE))
+fakeX <- matrix(rnorm(10000*80), nrow=10000)
+
+design <- model.matrix(~ cl + 0 )
+fakefit <- lmFit(fakeX, design)
+cont.matrix <- makeContrasts(clYES - clNO, levels=design)
+fakefit2 <- contrasts.fit(fakefit, cont.matrix)
+fakefit2 <- eBayes(fakefit2)
+round(topTable(fakefit2), 2)
+```
+```{r}
+df<- topTable(fit2, number=nrow(fit2), genelist=rownames(gse))
+
+p <- ggplot(df, aes(x = AveExpr, y = logFC))+
+    geom_point(aes(colour=-log10(P.Value)), alpha=1/3, size=1) +
+    scale_colour_gradient(low="blue",high="red")+
+    ylab("log2 fold change") + xlab("Average expression")
+p
+
+```
+```{r}
+p <- ggplot(df, aes(df$logFC,-log10(P.Value)))+
+    geom_point(aes(colour=-log10(P.Value)), alpha=1/3, size=1) +
+    scale_colour_gradient(low="blue",high="red")+
+    xlab("log2 fold change") + ylab("-log10 p-value")
+p
+```
+```{r}
+gse_pca <- prcomp(t(gse))
+df_toplot <- data.frame(rejection_status, 
+                        pc1 = gse_pca$x[,1], pc2 = gse_pca$x[,2]  )
+
+
+g <- ggplot(df_toplot, aes(x = pc1, y = pc2, color = rejection_status)) + 
+  geom_point() + 
+  theme_minimal() 
+g
+```
+
+```{r}
+largevar = apply(gse, 1, var)
+ind = which(largevar > quantile(largevar, 0.9))
+
+X = as.matrix(t(gse[ind,]))
+y = rejection_status
+
+cvK = 5  # number of CV folds
+cv_50acc5_knn = cv_50acc5_svm = cv_50acc5_rf = c()
+cv_acc_knn = cv_acc_svm = cv_acc_rf = c()
+
+n_sim = 25 ## number of repeats
+for (i in 1:n_sim) {
+
+  cvSets = cvTools::cvFolds(nrow(X), cvK)  # permute all the data, into 5 folds
+  cv_acc_rf = c()
+  
+  for (j in 1:cvK) {
+    test_id = cvSets$subsets[cvSets$which == j]
+    X_test = X[test_id, ]
+    X_train = X[-test_id, ]
+    y_test = y[test_id]
+    y_train = y[-test_id]
+
+    ## RandomForest
+    rf_res <- randomForest::randomForest(x = X_train, y = as.factor(y_train))
+    fit <- predict(rf_res, X_test)
+    cv_acc_rf[j] = table(fit, y_test) %>% diag %>% sum %>% `/`(length(y_test))
+  }
+  cv_50acc5_rf <- append(cv_50acc5_rf, mean(cv_acc_rf))
+} ## end for
+boxplot(list(RF=cv_50acc5_rf), xlab="Random forest")
+```
+
